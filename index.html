@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Litero</title>
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Litero">
+    <link rel="icon" type="image/svg+xml" href="/icon.svg">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+
+    <script src="js/vendor/dompurify.min.js" defer></script>
+    <script src="js/vendor/marked.umd.js" defer></script>
+    <script src="js/vendor/d3.min.js" defer></script>
+
+    <link id="theme-stylesheet" rel="stylesheet" href="themes/modern.css">
+    <link rel="stylesheet" href="mobile.css">
+</head>
+<body>
+
+<!-- CONTEXT MENUS -->
+<style>
+    .floating-menu {
+        display: none; position: fixed; z-index: 9999;
+        background: var(--nav-bg, rgba(24, 24, 37, 0.95)); 
+        backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+        border: 1px solid var(--border-color, #313244); 
+        border-radius: 8px; padding: 5px 0; 
+        box-shadow: 0 12px 24px rgba(0,0,0,0.5); 
+        min-width: 160px; overflow: hidden;
+    }
+    .context-menu-item {
+        padding: 8px 15px; cursor: pointer; color: var(--text-main, #cdd6f4); 
+        font-size: 0.9em; transition: background 0.2s, color 0.2s; 
+        display: flex; justify-content: space-between; align-items: center;
+    }
+    .context-menu-item:hover {
+        background: var(--bg-pill, #313244); color: var(--accent, #89b4fa);
+    }
+    .context-menu-item.disabled {
+        color: var(--text-muted, #6c7086); cursor: not-allowed;
+    }
+    .context-menu-item.disabled:hover {
+        background: transparent; color: var(--text-muted, #6c7086);
+    }
+    .context-menu-divider {
+        border-top: 1px solid var(--border-color, #313244);
+    }
+</style>
+
+<div id="custom-context-menu" class="floating-menu">
+    <div class="context-menu-item" id="menu-copy-single-tag" data-action="copy-single-tag" style="display: none;">Copy Tag</div>
+    <div class="context-menu-item" id="menu-copy-tags" data-action="copy-tags">Copy Tags</div>
+    <div class="context-menu-item" id="menu-paste-tags" data-action="paste-tags">Paste Tags</div>
+    <div class="context-menu-item context-menu-divider" id="menu-set-page" data-action="set-page">Set Page Number</div>
+</div>
+
+<div id="tag-click-menu" class="floating-menu">
+    <div class="context-menu-item" data-action="tag-filter">Filter by Tag</div>
+    <div class="context-menu-item context-menu-divider" data-action="tag-page">Go to Tag Page</div>
+</div>
+
+<datalist id="all-tags-datalist"></datalist>
+<datalist id="library-tags-datalist"></datalist>
+
+<!-- OVERLAYS & MODALS -->
+<div id="search-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.6); z-index: 2000; align-items: flex-start; justify-content: center; padding-top: 12vh; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);" data-overlay-close="search">
+    <div class="search-modal" style="background: var(--bg-card); width: 700px; max-width: 90%; border-radius: 12px; box-shadow: 0 25px 50px rgba(0,0,0,0.5); display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--border-color);" data-stop-overlay-close="true">
+        <div class="search-input-area" style="padding: 20px; border-bottom: 1px solid var(--border-color); display: flex; align-items: center; background: var(--bg-pill);">
+            <svg style="width: 24px; height: 24px; fill: var(--text-muted); margin-right: 15px; flex-shrink: 0;" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+            <input type="text" id="global-search-input" style="width: 100%; border: none; background: transparent; color: var(--text-main); outline: none; font-size: 1.4em; font-weight: 500; font-family: inherit;" placeholder="Search tags and highlights..." autocomplete="off">
+        </div>
+        <div class="search-results-area" id="search-results-area" style="max-height: 60vh; overflow-y: auto; padding: 10px;"></div>
+    </div>
+</div>
+
+<div id="taxonomy-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.6); z-index: 2000; align-items: flex-start; justify-content: center; padding-top: 12vh; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);" data-overlay-close="taxonomy">
+    <div class="search-modal" style="background: var(--bg-card); width: 700px; max-width: 90%; border-radius: 12px; box-shadow: 0 25px 50px rgba(0,0,0,0.5); display: flex; flex-direction: column; border: 1px solid var(--border-color); padding: 20px; overflow-y: auto; max-height: 80vh;" data-stop-overlay-close="true">
+        <h2 style="margin-top: 0; border-bottom: 1px solid var(--border-color); padding-bottom: 10px;">Taxonomy Settings</h2>
+
+        <div class="input-group" style="margin-top: 15px;">
+            <label class="input-label">AI Agent</label>
+            <select id="tax-provider" class="dropdown-select">
+                <option value="gemini">Gemini (Default)</option>
+                <option value="openai">OpenAI (GPT-4o)</option>
+                <option value="anthropic">Anthropic (Claude)</option>
+            </select>
+        </div>
+        <div class="input-group">
+            <label class="input-label">Categories (Comma separated)</label>
+            <textarea id="tax-categories" class="note-textarea" style="min-height: 60px;"></textarea>
+        </div>
+        <div class="input-group">
+            <label class="input-label">Fields (Comma separated)</label>
+            <textarea id="tax-fields" class="note-textarea" style="min-height: 80px;"></textarea>
+        </div>
+        <div class="input-group">
+            <label class="input-label">Roles (Comma separated)</label>
+            <textarea id="tax-roles" class="note-textarea" style="min-height: 60px;"></textarea>
+        </div>
+
+        <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px;">
+            <button class="save-btn" style="background: transparent; color: var(--text-dim); border: 1px solid var(--border-color);" data-action="close-taxonomy">Cancel</button>
+            <button id="save-tax-btn" class="save-btn" data-action="save-taxonomy">Save Config</button>
+        </div>
+    </div>
+</div>
+<!-- DESKTOP NAVBAR -->
+<nav class="navbar">
+    <div class="nav-logo">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" width="32" height="32" class="logo-svg">
+            <rect fill="#ffffff" width="240" height="240" />
+            <g id="frame">
+                <rect fill="none" stroke="#003366" stroke-width="3" x="12" y="12" width="216" height="216" />
+                <rect fill="none" stroke="#003366" stroke-width="1.5" x="18" y="18" width="204" height="204" />
+                <rect fill="none" stroke="#003366" stroke-width="1.5" x="24" y="24" width="192" height="192" />
+                <rect fill="#003366" x="12" y="12" width="12" height="12" />
+                <rect fill="#003366" x="216" y="12" width="12" height="12" />
+                <rect fill="#003366" x="12" y="216" width="12" height="12" />
+                <rect fill="#003366" x="216" y="216" width="12" height="12" />
+            </g>
+            <g transform="translate(20, 20)">
+                <path fill="none" stroke="#003366" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" d="M 30 100 C 10 90, 10 50, 40 40 C 60 30, 50 60, 30 70 C 20 75, 20 90, 35 110" />
+                <path fill="#003366" d="M 40 40 C 45 35, 55 35, 50 45 C 45 55, 35 45, 40 40 Z" />
+                <path fill="none" stroke="#003366" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" d="M 35 110 C 50 130, 20 160, 40 170" />
+                <path fill="none" stroke="#003366" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" d="M 90 90 C 120 60, 160 70, 150 100 C 140 130, 110 110, 120 90 C 125 80, 140 75, 155 75" />
+                <path fill="#003366" d="M 155 75 C 165 70, 170 85, 160 85 C 150 85, 145 80, 155 75 Z" />
+                <path fill="none" stroke="#003366" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" d="M 120 90 C 110 80, 110 65, 125 55" />
+                <path fill="#003366" d="M 125 55 C 135 45, 145 55, 135 65 C 125 75, 120 60, 125 55 Z" />
+                <path fill="#0071E3" d="M 25 30 L 110 30 L 110 40 C 95 40, 90 45, 90 60 L 90 160 C 90 175, 135 165, 175 110 C 185 125, 195 155, 185 185 C 130 178, 80 178, 15 185 C 15 175, 20 165, 25 160 C 35 165, 45 170, 50 145 L 50 60 C 50 45, 40 40, 25 40 Z" />
+                <path fill="#003366" d="M 70 50 L 74 58 L 70 60 L 66 58 Z" />
+                <path fill="#003366" d="M 70 70 L 74 62 L 70 60 L 66 62 Z" />
+                <path fill="#003366" d="M 60 60 L 68 56 L 70 60 L 68 64 Z" />
+                <path fill="#003366" d="M 80 60 L 72 56 L 70 60 L 72 64 Z" />
+                <circle cx="70" cy="60" r="1.5" fill="#ffffff" />
+                <path fill="#003366" d="M 70 90 L 74 98 L 70 100 L 66 98 Z" />
+                <path fill="#003366" d="M 70 110 L 74 102 L 70 100 L 66 102 Z" />
+                <path fill="#003366" d="M 60 100 L 68 96 L 70 100 L 68 104 Z" />
+                <path fill="#003366" d="M 80 100 L 72 96 L 70 100 L 72 104 Z" />
+                <circle cx="70" cy="100" r="1.5" fill="#ffffff" />
+                <path fill="#003366" d="M 70 130 L 74 138 L 70 140 L 66 138 Z" />
+                <path fill="#003366" d="M 70 150 L 74 142 L 70 140 L 66 142 Z" />
+                <path fill="#003366" d="M 60 140 L 68 136 L 70 140 L 68 144 Z" />
+                <path fill="#003366" d="M 80 140 L 72 136 L 70 140 L 72 144 Z" />
+                <circle cx="70" cy="140" r="1.5" fill="#ffffff" />
+            </g>
+        </svg>
+        Litero
+    </div>
+    <div class="nav-links">
+        <div class="nav-item active" id="nav-browse" data-view="browse">Browse</div>
+        <div class="nav-item" id="nav-books" data-view="books">Library</div>
+        <div class="nav-item" id="nav-study" data-view="study">Study</div>
+        <div class="nav-item" id="nav-map" data-view="map">Map</div>
+        <div class="nav-item" id="nav-tags" data-action="open-tags">Tags</div>
+        <div class="nav-item" id="nav-chat" data-external-url="https://readwise.io/chat">Chat</div>
+
+        <div class="nav-item" data-action="open-taxonomy" title="Taxonomy Settings">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+                <path d="M19.14,12.94c0.04-0.3,0.06-0.61,0.06-0.94c0-0.32-0.02-0.64-0.06-0.94l2.03-1.58c0.18-0.14,0.23-0.41,0.12-0.61 l-1.92-3.32c-0.12-0.22-0.37-0.29-0.59-0.22l-2.39,0.96c-0.5-0.38-1.03-0.7-1.62-0.94L14.4,2.81c-0.04-0.24-0.24-0.41-0.48-0.41 h-3.84c-0.24,0-0.43,0.17-0.47,0.41L9.25,5.35C8.66,5.59,8.12,5.92,7.63,6.29L5.24,5.33c-0.22-0.08-0.47,0-0.59,0.22L2.73,8.87 C2.62,9.08,2.66,9.34,2.86,9.48l2.03,1.58C4.84,11.36,4.8,11.69,4.8,12s0.02,0.64,0.06,0.94l-2.03,1.58 c-0.18,0.14-0.23,0.41-0.12,0.61l1.92,3.32c0.12,0.22,0.37,0.29,0.59,0.22l2.39-0.96c0.5,0.38,1.03,0.7,1.62,0.94l0.36,2.54 c0.05,0.24,0.24,0.41,0.48,0.41h3.84c0.24,0,0.44-0.17,0.47-0.41l0.36-2.54c0.59-0.24,1.13-0.56,1.62-0.94l2.39,0.96 c0.22,0.08,0.47,0,0.59-0.22l1.92-3.32c0.12-0.22,0.07-0.49-0.12-0.61L19.14,12.94z M12,15.6c-1.98,0-3.6-1.62-3.6-3.6 s1.62-3.6,3.6-3.6s3.6,1.62,3.6,3.6S13.98,15.6,12,15.6z"/>
+            </svg>
+        </div>
+        <div class="nav-item" data-action="run-taxonomy" title="Taxonomize Tags">
+            <svg id="tax-icon" viewBox="0 0 24 24" width="18" height="18" fill="currentColor" style="transition: transform 1s linear;">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm5 11h-4v4h-2v-4H7v-2h4V7h2v4h4v2z"/>
+            </svg>
+        </div>
+        <div class="nav-item" data-action="incremental-sync" title="Fetch New Highlights">
+            <svg id="sync-icon" viewBox="0 0 24 24" width="18" height="18" fill="currentColor" style="transition: transform 1s linear;">
+                <path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/>
+            </svg>
+        </div>
+        <div class="nav-item" data-action="open-search" title="Search">
+            <svg class="search-icon" viewBox="0 0 24 24">
+                <path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+            </svg>
+        </div>
+    </div>
+</nav>
+
+<!-- MOBILE BOTTOM NAV -->
+<div class="mobile-only mobile-bottom-nav">
+    <div class="mobile-nav-btn active" data-view="browse" data-mobile-nav="true">
+        <span class="mobile-nav-icon"> </span>Browse
+    </div>
+    <div class="mobile-nav-btn" data-view="books" data-mobile-nav="true">
+        <span class="mobile-nav-icon"> </span>Library
+    </div>
+    <div class="mobile-nav-btn" data-action="toggle-mobile-sidebar" id="mobile-filter-btn">
+        <span class="mobile-nav-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+        </span>
+        Filters
+    </div>
+    <div class="mobile-nav-btn" data-view="study" data-mobile-nav="true">
+        <span class="mobile-nav-icon"> </span>Study
+    </div>
+    <div class="mobile-nav-btn" data-view="tags" data-mobile-nav="true">
+        <span class="mobile-nav-icon"> </span>Tags
+    </div>
+</div>
+
+<!-- ============================================== -->
+<!-- VIEW: BROWSE                                   -->
+<!-- ============================================== -->
+<div class="view-container" id="view-browse">
+    <div class="sidebar">
+        <h2>Active Filters</h2>
+        <div id="active-tags-container"><p class="empty-state-text">No tags selected.</p></div>
+
+        <h2 class="mt-20">Related Context</h2>
+
+        <div class="sort-btn-group">
+            <button data-browse-sort="alpha" class="sort-btn active" id="sort-browse-alpha">A-Z</button>
+            <button data-browse-sort="count" class="sort-btn" id="sort-browse-count">Freq</button>
+            <button data-browse-sort="time" class="sort-btn" id="sort-browse-time">Time</button>
+        </div>
+
+        <div id="available-tags-container" class="scrollable-tags"></div>
+    </div>
+
+    <div class="main-content">
+        <div class="view-header">
+            <h2 class="view-title">Highlights <span id="result-count" class="result-count"></span></h2>
+
+            <div class="header-actions">
+                <label class="toggle-label"><input type="checkbox" id="group-toggle" data-change-action="toggle-grouping">Group by Document</label>
+                <label class="toggle-label"><input type="checkbox" id="books-only-toggle" data-change-action="toggle-books-only">Books Only</label>
+            </div>
+        </div>
+
+        <div id="highlights-container"><p>Loading data...</p></div>
+    </div>
+</div>
+
+<!-- ============================================== -->
+<!-- VIEW: SEARCH                                   -->
+<!-- ============================================== -->
+<div class="view-container" id="view-search" style="display: none;">
+    <div class="sidebar">
+        <h2>Search Results</h2>
+        <div class="input-group mt-20">
+            <p class="search-meta-text">Query: <strong id="search-query-display" class="search-meta-highlight"></strong></p>
+            <p class="search-meta-text">Matches: <strong id="search-match-count" class="search-meta-highlight">0</strong></p>
+        </div>
+
+        <button class="primary-btn" data-view="browse">Back to Browse</button>
+    </div>
+
+    <div class="main-content">
+        <div class="view-header baseline mb-20">
+            <h2 class="view-title">Full Highlights</h2>
+        </div>
+        <div id="search-full-results-container"><p class="empty-state-text-center">Searching...</p></div>
+    </div>
+</div>
+
+<!-- ============================================== -->
+<!-- VIEW: LIBRARY (BOOKS)                          -->
+<!-- ============================================== -->
+<div class="view-container" id="view-books" style="display: none;">
+    <div class="sidebar">
+        <div id="library-default-sidebar" class="sidebar-flex-column">
+            <h2>Library View</h2>
+            <div class="input-group mt-20">
+                <label class="input-label">Sort By</label>
+                <select id="library-sort" class="dropdown-select" data-change-action="library-sort">
+                    <option value="last_highlighted">Last Highlighted</option>
+                    <option value="title">Title</option>
+                </select>
+            </div>
+
+            <div class="input-group">
+                <input type="text" id="library-search" class="text-input" placeholder="Search titles..." data-input-action="library-search">
+            </div>
+
+            <h3 class="mt-20">Categories</h3>
+            <div class="controls-section no-border mb-20" id="library-categories"></div>
+
+            <h2>Active Tag Filters</h2>
+            <div id="library-active-tags-container"><p class="empty-state-text">No tags selected.</p></div>
+
+            <h2 class="mt-20">Document Tags</h2>
+            <div id="library-available-tags-container" class="scrollable-tags"></div>
+        </div>
+
+        <div id="library-book-sidebar" class="sidebar-flex-column" style="display: none;">
+            <h2>Context in Book</h2>
+            <div id="book-active-tags-container" class="mb-20"><p class="empty-state-text">No tags selected.</p></div>
+
+            <div class="sort-btn-group">
+                <button data-book-sort="alpha" class="sort-btn" id="sort-book-alpha">A-Z</button>
+                <button data-book-sort="count" class="sort-btn active" id="sort-book-count">Freq</button>
+                <button data-book-sort="time" class="sort-btn" id="sort-book-time">Time</button>
+            </div>
+
+            <div id="book-context-tags-container" class="scrollable-tags"></div>
+        </div>
+    </div>
+
+    <div class="main-content">
+        <div id="library-grid-container">
+            <div class="view-header baseline mb-20">
+                <h2 class="view-title">Catalog <span id="library-count" class="result-count"></span></h2>
+            </div>
+            <div id="books-grid" class="books-grid"><p>Loading library...</p></div>
+        </div>
+
+        <div id="single-book-container" style="display: none;">
+            <button class="primary-btn back-btn" data-action="close-book">Back to Catalog</button>
+            <div id="single-book-header" class="panel-container book-header-panel"></div>
+            <div id="single-book-highlights"></div>
+        </div>
+    </div>
+</div>
+
+<!-- ============================================== -->
+<!-- VIEW: STUDY (SRS)                              -->
+<!-- ============================================== -->
+<div class="view-container" id="view-study" style="display: none;">
+    <div class="sidebar">
+        <h2>Study Configuration</h2>
+
+        <div class="input-group mt-20">
+            <label class="input-label">Filter by Book</label>
+            <input type="text" id="srs-book-input" class="text-input" placeholder="Title substring..." data-input-action="srs-book">
+        </div>
+
+        <div class="input-group">
+            <label class="input-label">Filter by Tag</label>
+            <input type="text" id="srs-tag-input" class="text-input" list="all-tags-datalist" placeholder="Enter tag name...">
+            <div id="srs-active-tags" style="margin-top: 8px;"></div>
+        </div>
+
+        <div class="controls-section">
+            <label class="toggle-label"><input type="checkbox" id="srs-yesterday-toggle" data-change-action="srs-refresh">Review Yesterday's Highlights</label>
+            <label class="toggle-label"><input type="checkbox" id="srs-ignore-toggle" data-change-action="srs-refresh">Ignore 12h Cooldown</label>
+        </div>
+
+        <button id="manual-sync-btn" class="primary-btn" data-action="manual-sync">
+            Force Full Database Sync
+        </button>
+
+        <h2 class="mt-20">Session Stats</h2>
+        <p class="search-meta-text">Cards reviewed: <strong id="srs-session-count" class="search-meta-highlight">0</strong></p>
+
+        <div class="metric-card mt-20">
+            <p class="empty-state-text" style="margin: 0; line-height: 1.5;"><strong>Shortcuts:</strong><br/>Press <strong>0-5</strong> to rate.<br/>Press <strong>T</strong> to add a tag.<br/>Press <strong>S</strong> to skip card.</p>
+        </div>
+    </div>
+
+    <div class="main-content">
+        <div class="view-header">
+            <h2 class="view-title">Review Queue</h2>
+            <button class="primary-btn btn-secondary" style="width: auto; padding: 6px 12px; margin: 0;" data-action="skip-srs">Skip Card (S)</button>
+        </div>
+        <div id="srs-card-container"><p class="empty-state-text-center">Fetching next highlight...</p></div>
+    </div>
+</div>
+
+<!-- ============================================== -->
+<!-- VIEW: MAP                                      -->
+<!-- ============================================== -->
+<div class="view-container" id="view-map" style="display: none;">
+    <div class="sidebar">
+        <h2>Graph Controls</h2>
+
+        <div class="controls-section no-border">
+            <label class="toggle-label"><input type="radio" name="map-filter" value="all" checked data-change-action="map-filter"> Show All Links</label>
+            <label class="toggle-label"><input type="radio" name="map-filter" value="people" data-change-action="map-filter"> People Only</label>
+            <label class="toggle-label"><input type="radio" name="map-filter" value="ideas" data-change-action="map-filter"> Ideas & Concepts Only</label>
+        </div>
+
+        <div style="margin-top: 30px;">
+            <h3 style="margin-bottom: 10px;">Legend</h3>
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;"><div style="width:12px; height:12px; border-radius:50%; background:#89b4fa; box-shadow: 0 0 5px #89b4fa;"></div> <span style="font-size:0.85em; color:var(--text-dim)">People</span></div>
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;"><div style="width:12px; height:12px; border-radius:50%; background:#cba6f7; box-shadow: 0 0 5px #cba6f7;"></div> <span style="font-size:0.85em; color:var(--text-dim)">Ideas</span></div>
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;"><div style="width:12px; height:12px; border-radius:50%; background:#a6e3a1; box-shadow: 0 0 5px #a6e3a1;"></div> <span style="font-size:0.85em; color:var(--text-dim)">Periods/Regions</span></div>
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;"><div style="width:12px; height:12px; border-radius:50%; background:#f38ba8; box-shadow: 0 0 5px #f38ba8;"></div> <span style="font-size:0.85em; color:var(--text-dim)">Other</span></div>
+        </div>
+    </div>
+
+    <div class="main-content" style="position: relative;">
+        <div id="d3-map-container" class="panel-container map-panel"><svg id="force-graph" width="100%" height="100%"></svg></div>
+        <div id="map-tooltip" class="map-tooltip"></div>
+    </div>
+</div>
+
+<!-- ============================================== -->
+<!-- VIEW: PERSON                                   -->
+<!-- ============================================== -->
+<div class="view-container" id="view-person" style="display: none;">
+    <div class="sidebar" id="person-sidebar">
+        <button class="primary-btn" data-action="back-to-tags" style="margin-top: 0; margin-bottom: 20px;">
+            Back to Tag Index
+        </button>
+
+        <h2 style="margin-top: 0px;">Related Context</h2>
+
+        <div id="person-available-tags-container" class="scrollable-tags">
+            <p class="empty-state-text">Loading related tags...</p>
+        </div>
+    </div>
+
+    <div class="main-content">
+        <div class="panel-container">
+            <h2 id="person-name-display" class="person-title"></h2>
+
+            <div style="position: relative;">
+                <div id="person-blurb" class="blurb-container">
+                    <div id="person-image-container" class="person-image-wrapper"></div>
+                    <div id="person-blurb-text" class="blurb-text">Loading...</div>
+                </div>
+
+                <div id="person-blurb-fade" class="blurb-fade"></div>
+            </div>
+
+            <button id="person-blurb-toggle" class="blurb-toggle-btn" data-action="toggle-person-blurb">Show more  </button>
+        </div>
+
+        <div id="person-primary-container" style="display: none; margin-bottom: 10px;">
+            <h3 class="source-section-title">Primary Sources (Author)</h3>
+            <div id="primary-sources-content"></div>
+        </div>
+
+        <div id="person-secondary-container" style="display: none;">
+            <h3 class="source-section-title">Mentioned in...</h3>
+            <div id="secondary-sources-content"></div>
+        </div>
+    </div>
+</div>
+
+<!-- ============================================== -->
+<!-- VIEW: TAGS INDEX                               -->
+<!-- ============================================== -->
+<div class="view-container" id="view-tags" style="display: none;">
+    <div class="main-content" style="grid-column: 1 / -1;">
+        <div class="view-header baseline">
+            <h2 class="view-title">Tag Index</h2>
+            <p class="search-meta-text">Filter by date to explore your reading history.</p>
+        </div>
+
+        <div id="tag-stats-dashboard" class="panel-container">
+            <div style="margin-bottom: 30px;">
+                <div class="slider-header">
+                    <span id="slider-display-start">YYYY-MM-DD</span>
+                    <span id="slider-display-end">YYYY-MM-DD</span>
+                </div>
+                <div class="slider-container">
+                    <input type="range" id="stats-start-slider" class="dual-slider" min="0" max="100" value="0">
+                    <input type="range" id="stats-end-slider" class="dual-slider" min="0" max="100" value="100">
+                    <div class="slider-track"></div>
+                </div>
+            </div>
+
+            <div id="time-period-metrics" class="metrics-grid"></div>
+        </div>
+
+        <div class="view-header">
+            <h3 class="view-title" style="font-size: 1.1em; text-transform: none; letter-spacing: 0; color: var(--text-main);">Filtered Tags <span id="filtered-tag-count" class="result-count"></span></h3>
+            <div class="sort-btn-group" style="margin-bottom: 0;">
+                <button data-tag-index-sort="alpha" id="sort-index-alpha" class="sort-btn">A-Z</button>
+                <button data-tag-index-sort="count" id="sort-index-count" class="sort-btn active">Freq</button>
+            </div>
+        </div>
+
+        <div id="full-tag-index-container" class="tag-index-grid"></div>
+    </div>
+</div>
+
+<script src="js/main.js" defer></script>
+</body>
+</html>
