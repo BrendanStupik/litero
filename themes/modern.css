@@ -69,6 +69,7 @@ h3 { color: var(--accent-active); font-size: 0.95em; margin: 20px 0 8px 0; text-
 .nav-item { cursor: pointer; color: var(--text-dim); font-weight: 600; padding: 8px 12px; border-radius: 6px; transition: all 0.2s ease; user-select: none; display: flex; align-items: center; gap: 6px; }
 .nav-item:hover { color: var(--text-main); background: var(--bg-pill); transform: translateY(-1px); }
 .nav-item.active { color: var(--accent); background: var(--bg-pill); box-shadow: inset 0 -2px 0 var(--accent); }
+.search-icon { width: 18px; height: 18px; display: block; fill: currentColor; flex-shrink: 0; }
 
 @media (min-width: 768px) {
     .mobile-only, .mobile-bottom-nav { display: none; }
