@@ -76,6 +76,7 @@ BOOK_CACHE_VERSION = 2
 BOOK_CACHE_LOCK = threading.RLock()
 DATA_LOCK = threading.RLock()
 WIKI_CACHE_LOCK = threading.RLock()
+SYNC_LOCK = threading.Lock()
 COVER_LOCKS = {}
 COVER_LOCKS_GUARD = threading.Lock()
 CSRF_COOKIE_NAME = "litero_csrf"
@@ -1183,7 +1184,8 @@ def get_cached_cover(book_key):
 def sync_data():
     request_json()
     try:
-        run_manual_sync()
+        with SYNC_LOCK:
+            run_manual_sync()
         return jsonify({"success": True})
     except Exception as e:
         print(f"[Sync] Full sync failed: {e}")
@@ -1193,7 +1195,8 @@ def sync_data():
 def sync_incremental_data():
     request_json()
     try:
-        count = run_incremental_sync()
+        with SYNC_LOCK:
+            count = run_incremental_sync()
         return jsonify({"success": True, "new_count": count})
     except Exception as e:
         print(f"[Sync] Incremental sync failed: {e}")
@@ -1344,7 +1347,6 @@ def get_book_highlights():
 def person_page():
     data = request_json()
     person_name = bounded_string(data, "person", max_length=MAX_TAG_LENGTH, required=True)
-    wiki_data = get_wikipedia_data(person_name)
 
     primary_sources = {}
     secondary_sources = {}
@@ -1377,10 +1379,15 @@ def person_page():
     return jsonify({
         "success": True,
         "name": person_name,
-        "wiki": wiki_data,
         "primary_sources": list(primary_sources.values()),
         "secondary_sources": list(secondary_sources.values()),
     })
+
+@app.route("/api/person/wiki", methods=["POST"])
+def person_wikipedia():
+    data = request_json()
+    person_name = bounded_string(data, "person", max_length=MAX_TAG_LENGTH, required=True)
+    return jsonify({"success": True, "wiki": get_wikipedia_data(person_name)})
 
 @app.route("/api/search", methods=["POST"])
 def global_search():
