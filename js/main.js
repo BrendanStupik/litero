@@ -53,6 +53,12 @@ let currentTagIndexData = [];
 let currentTagIndexSort = 'count';
 let timeMetricsTimeout = null;
 
+const BACKGROUND_SYNC_INTERVAL_MS = 15 * 60 * 1000;
+let backgroundSyncStarted = false;
+let lastIncrementalSyncAt = 0;
+let incrementalSyncPromise = null;
+let personPageLoadToken = 0;
+
 document.documentElement.setAttribute('data-theme', 'light');
 marked.use({ breaks: true });
 
@@ -94,10 +100,14 @@ function renderMarkdown(value) {
     return DOMPurify.sanitize(parsed, MARKDOWN_SANITIZE_CONFIG);
 }
 
-function safeURL(value, { sameOriginOnly = false, allowedHost = null } = {}) {
+function safeURL(value, { sameOriginOnly = false, allowedHost = null, externalOnly = false } = {}) {
+    const rawValue = String(value ?? '').trim();
+    if (!rawValue) return '';
+
     try {
-        const url = new URL(String(value || ''), window.location.origin);
+        const url = new URL(rawValue, window.location.origin);
         if (sameOriginOnly && url.origin !== window.location.origin) return '';
+        if (externalOnly && url.origin === window.location.origin) return '';
         if (url.origin !== window.location.origin && url.protocol !== 'https:') return '';
         if (allowedHost && url.hostname !== allowedHost) return '';
         return url.href;
@@ -161,8 +171,10 @@ function jsonPost(url, payload = {}) {
 // 2. INITIALIZATION & GLOBAL LISTENERS
 // =========================================================================
 document.addEventListener('DOMContentLoaded', () => {
-    fetchExplorationData();
-    fetchLibraryExplorationData();
+    void fetchExplorationData();
+    void fetchLibraryExplorationData();
+    void fetchTimeMetrics(null, null, true);
+    startBackgroundHighlightSync();
 });
 
 document.addEventListener('click', (e) => {
@@ -202,7 +214,7 @@ document.addEventListener('click', (e) => {
             'close-book': closeBookView,
             'manual-sync': triggerManualSync,
             'skip-srs': skipSRSCard,
-            'back-to-tags': () => { switchView('tags'); renderFlatTagIndex(); },
+            'back-to-tags': openTagsTab,
             'toggle-person-blurb': togglePersonBlurb,
         };
         const handler = actions[actionEl.dataset.action];
@@ -233,6 +245,7 @@ document.addEventListener('click', (e) => {
     if (tagMenuEl) {
         const tag = tagMenuEl.dataset.tagMenu;
         showTagClickMenu(e, tag, () => selectSearchTag(tag));
+        return;
     }
     const deleteTagEl = e.target.closest('[data-delete-tag]');
     if (deleteTagEl) deleteTag(deleteTagEl.dataset.highlightId, deleteTagEl.dataset.deleteTag, deleteTagEl.dataset.ctx);
@@ -910,36 +923,94 @@ async function saveText(id, ctx) {
 // =========================================================================
 // 5. DATABASE SYNCING LOGIC
 // =========================================================================
-async function triggerIncrementalSync(silent = false) {
-    const icon = document.getElementById('sync-icon');
-    if (!silent) icon.style.transform = "rotate(360deg)";
+function getCurrentTagIndexRange() {
+    if (!absoluteMinMs || !absoluteMaxMs) return { startDate: null, endDate: null };
 
-    try {
-        const resp = await jsonPost('/api/sync/incremental');
-        const data = await resp.json();
+    const startDate = document.getElementById('slider-display-start')?.textContent || null;
+    const endDate = document.getElementById('slider-display-end')?.textContent || null;
+    return {
+        startDate: startDate === msToDateStr(absoluteMinMs) ? null : startDate,
+        endDate: endDate === msToDateStr(absoluteMaxMs) ? null : endDate,
+    };
+}
 
-        if (data.success && data.new_count > 0) {
-            if (currentAppMode === 'browse') fetchExplorationData();
-            if (currentAppMode === 'books') fetchLibraryExplorationData();
-            if (currentAppMode === 'study' && !currentSrsHighlightId) fetchNextSRS();
-            if (!silent) {
-                const originalColor = icon.style.fill;
-                icon.style.fill = "var(--success)";
-                setTimeout(() => icon.style.fill = originalColor, 2000);
-            }
-        } else if (!data.success && !silent) {
-            alert("Incremental sync failed: " + data.error);
-        }
-    } catch (e) {
-        if (!silent) alert("Network error during sync.");
-        console.error("Incremental sync failed", e);
-    }
+async function refreshClientDataAfterSync() {
+    const { startDate, endDate } = getCurrentTagIndexRange();
+    await Promise.allSettled([
+        fetchExplorationData(),
+        fetchLibraryExplorationData(),
+        fetchTimeMetrics(startDate, endDate, true),
+    ]);
 
-    if (!silent) {
-        setTimeout(() => icon.style.transform = "rotate(0deg)", 1000);
+    if (currentAppMode === 'books' && currentBookView) {
+        await openBookView(currentBookView);
+    } else if (currentAppMode === 'person' && lastViewedTag) {
+        await openPersonPage(lastViewedTag);
+    } else if (currentAppMode === 'study' && !currentSrsHighlightId) {
+        await fetchNextSRS();
+    } else if (currentAppMode === 'map') {
+        graphData = null;
+        await initMap();
     }
 }
-setInterval(() => { triggerIncrementalSync(true); }, 15 * 60 * 1000);
+
+async function triggerIncrementalSync(silent = false) {
+    if (incrementalSyncPromise) return incrementalSyncPromise;
+
+    incrementalSyncPromise = (async () => {
+        const icon = document.getElementById('sync-icon');
+        if (!silent && icon) icon.style.transform = "rotate(360deg)";
+
+        try {
+            const resp = await jsonPost('/api/sync/incremental');
+            const data = await resp.json();
+            lastIncrementalSyncAt = Date.now();
+
+            if (data.success && data.new_count > 0) {
+                await refreshClientDataAfterSync();
+                if (!silent && icon) {
+                    const originalColor = icon.style.fill;
+                    icon.style.fill = "var(--success)";
+                    setTimeout(() => icon.style.fill = originalColor, 2000);
+                }
+            } else if (!data.success && !silent) {
+                alert("Incremental sync failed: " + data.error);
+            }
+            return data;
+        } catch (e) {
+            if (!silent) alert("Network error during sync.");
+            console.error("Incremental sync failed", e);
+            return { success: false, error: String(e) };
+        } finally {
+            if (!silent && icon) {
+                setTimeout(() => icon.style.transform = "rotate(0deg)", 1000);
+            }
+        }
+    })();
+
+    try {
+        return await incrementalSyncPromise;
+    } finally {
+        incrementalSyncPromise = null;
+    }
+}
+
+function startBackgroundHighlightSync() {
+    if (backgroundSyncStarted) return;
+    backgroundSyncStarted = true;
+    lastIncrementalSyncAt = Date.now();
+
+    window.setInterval(() => {
+        void triggerIncrementalSync(true);
+    }, BACKGROUND_SYNC_INTERVAL_MS);
+
+    document.addEventListener('visibilitychange', () => {
+        const syncIsDue = Date.now() - lastIncrementalSyncAt >= BACKGROUND_SYNC_INTERVAL_MS;
+        if (document.visibilityState === 'visible' && syncIsDue) {
+            void triggerIncrementalSync(true);
+        }
+    });
+}
 
 async function triggerManualSync() {
     const btn = document.getElementById('manual-sync-btn');
@@ -956,9 +1027,8 @@ async function triggerManualSync() {
         if (data.success) {
             btn.textContent = "Sync Complete!";
             btn.style.background = "var(--success)";
-            if (currentAppMode === 'study') fetchNextSRS();
-            if (currentAppMode === 'browse') fetchExplorationData();
-            if (currentAppMode === 'books') fetchLibraryExplorationData();
+            lastIncrementalSyncAt = Date.now();
+            await refreshClientDataAfterSync();
 
             setTimeout(() => {
                 btn.textContent = originalText;
@@ -1525,7 +1595,7 @@ function renderBookView() {
         ? `<img src="${escapeHTML(coverURL)}" class="book-cover" style="margin:0; height:180px; width:120px;" alt="">`
         : '<div class="book-cover-placeholder" style="margin:0; height:180px; width:120px;">No Cover</div>';
     const readwiseURL = safeURL(book.readwise_url, { allowedHost: 'readwise.io' });
-    const sourceURL = safeURL(book.source_url);
+    const sourceURL = safeURL(book.source_url, { externalOnly: true });
     const sourceLower = sourceURL.toLowerCase();
     const sourceAllowed = sourceURL && !sourceLower.endsWith('.pdf') && !sourceLower.endsWith('.epub');
     const links = [
@@ -1599,31 +1669,41 @@ function renderBookContextSidebar() {
 // =========================================================================
 async function openTagsTab() {
     switchView('tags');
-    if (absoluteMinMs === 0) {
+    if (absoluteMinMs === 0 || currentTagIndexData.length === 0) {
         document.getElementById('full-tag-index-container').innerHTML = '<p class="empty-state-text-center">Loading index...</p>';
         await fetchTimeMetrics(null, null, true);
+    } else {
+        renderFlatTagIndex();
     }
 }
 
 function initSliders(minDateStr, maxDateStr) {
-    const minDate = new Date(minDateStr + "T00:00:00Z");
-    const maxDate = new Date(maxDateStr + "T00:00:00Z");
-
-    absoluteMinMs = minDate.getTime();
-    absoluteMaxMs = maxDate.getTime();
-
-    const totalDays = Math.max(1, Math.ceil((absoluteMaxMs - absoluteMinMs) / (1000 * 60 * 60 * 24)));
-
     const startSlider = document.getElementById('stats-start-slider');
     const endSlider = document.getElementById('stats-end-slider');
+    const wasInitialized = startSlider.hasAttribute('data-init');
+    const previousMinMs = absoluteMinMs;
+    const previousMaxMs = absoluteMaxMs;
+    const previousStartDate = wasInitialized ? msToDateStr(previousMinMs + Number(startSlider.value) * 86400000) : minDateStr;
+    const previousEndDate = wasInitialized ? msToDateStr(previousMinMs + Number(endSlider.value) * 86400000) : maxDateStr;
+    const followedLatestDate = !wasInitialized || previousEndDate === msToDateStr(previousMaxMs);
 
-    if (!startSlider.hasAttribute('data-init')) {
-        startSlider.max = totalDays;
-        endSlider.max = totalDays;
-        startSlider.value = 0;
-        endSlider.value = totalDays;
+    absoluteMinMs = new Date(minDateStr + "T00:00:00Z").getTime();
+    absoluteMaxMs = new Date(maxDateStr + "T00:00:00Z").getTime();
+    const totalDays = Math.max(1, Math.ceil((absoluteMaxMs - absoluteMinMs) / 86400000));
+
+    startSlider.max = totalDays;
+    endSlider.max = totalDays;
+
+    const dateOffset = dateStr => {
+        const parsed = new Date(dateStr + "T00:00:00Z").getTime();
+        return Math.max(0, Math.min(totalDays, Math.round((parsed - absoluteMinMs) / 86400000)));
+    };
+
+    startSlider.value = wasInitialized ? dateOffset(previousStartDate) : 0;
+    endSlider.value = followedLatestDate ? totalDays : dateOffset(previousEndDate);
+
+    if (!wasInitialized) {
         startSlider.setAttribute('data-init', 'true');
-
         startSlider.addEventListener('input', handleSliderDrag);
         endSlider.addEventListener('input', handleSliderDrag);
         startSlider.addEventListener('change', handleSliderRelease);
@@ -1717,6 +1797,7 @@ function renderFlatTagIndex() {
 // 11. VIEW MODULE: PERSON PAGE
 // =========================================================================
 async function openPersonPage(personName) {
+    const loadToken = ++personPageLoadToken;
     lastViewedTag = String(personName || '');
     switchView('person');
     document.getElementById('person-name-display').textContent = lastViewedTag;
@@ -1730,63 +1811,36 @@ async function openPersonPage(personName) {
     document.getElementById('person-blurb-fade').style.display = 'none';
     document.getElementById('person-blurb-toggle').style.display = 'none';
 
-    try {
-        const [personResp, exploreResp] = await Promise.all([
-            jsonPost('/api/person', { person: lastViewedTag }),
-            jsonPost('/api/explore', { tags: [lastViewedTag] }),
-        ]);
-        const personData = await personResp.json();
-        const exploreData = await exploreResp.json();
+    const isCurrentLoad = () => loadToken === personPageLoadToken && lastViewedTag === String(personName || '');
+    const renderSources = (sources, containerId) => {
+        const sourceList = Array.isArray(sources) ? sources : [];
+        const books = sourceList.filter(source => source.category === 'books');
+        const articles = sourceList.filter(source => ['articles', 'tweets'].includes(source.category));
+        const media = sourceList.filter(source => !['books', 'articles', 'tweets'].includes(source.category));
+        let html = '';
+        if (books.length > 0) {
+            html += '<div class="books-grid" style="margin-bottom:0;">';
+            html += books.map(book => {
+                const title = String(book.title || 'Unknown');
+                const author = String(book.author || 'Unknown');
+                const coverURL = safeURL(book.cover, { sameOriginOnly: true });
+                const cover = coverURL && new URL(coverURL).pathname.startsWith('/api/covers/')
+                    ? `<img src="${escapeHTML(coverURL)}" class="book-cover" loading="lazy" alt="">`
+                    : '<div class="book-cover-placeholder">No Cover</div>';
+                return `<div class="book-card" data-open-book="${escapeHTML(title)}">${cover}<div class="book-title">${escapeHTML(title)}</div><div class="book-author">${escapeHTML(author)}</div></div>`;
+            }).join('');
+            html += '</div>';
+        }
+        const textList = (items, heading) => items.length === 0 ? '' : `<h4 class="source-list-title">${heading}</h4><div class="source-list-container">${items.map(item => `<div class="source-list-item" data-open-book="${escapeHTML(item.title || 'Unknown')}"><div class="source-list-item-content"><div class="source-list-item-title">${escapeHTML(item.title || 'Unknown')}</div><div class="source-list-item-author">${escapeHTML(item.author || 'Unknown')}</div></div></div>`).join('')}</div>`;
+        html += textList(articles, 'Articles & Text');
+        html += textList(media, 'Audio & Video');
+        setSafeHTML(document.getElementById(containerId), html);
+    };
 
-        if (personData.success) {
-            const imageURL = safeURL(personData.wiki?.image_url, { allowedHost: 'upload.wikimedia.org' });
-            if (imageURL) {
-                const image = document.createElement('img');
-                image.src = imageURL;
-                image.className = 'person-image';
-                image.alt = '';
-                document.getElementById('person-image-container').appendChild(image);
-            }
-
-            const allTags = currentData ? currentData.all_database_tags : libraryData ? libraryData.all_book_tags : [];
-            renderLinkedPlainText(document.getElementById('person-blurb-text'), personData.wiki?.blurb || 'No Wikipedia extract found.', allTags, lastViewedTag);
-
-            const blurb = document.getElementById('person-blurb');
-            blurb.style.maxHeight = '390px';
-            setTimeout(() => {
-                if (blurb.scrollHeight > 530) {
-                    document.getElementById('person-blurb-fade').style.display = 'block';
-                    const toggle = document.getElementById('person-blurb-toggle');
-                    toggle.style.display = 'block';
-                    toggle.textContent = 'Show more ▾';
-                }
-            }, 100);
-
-            const renderSources = (sources, containerId) => {
-                const sourceList = Array.isArray(sources) ? sources : [];
-                const books = sourceList.filter(source => source.category === 'books');
-                const articles = sourceList.filter(source => ['articles', 'tweets'].includes(source.category));
-                const media = sourceList.filter(source => !['books', 'articles', 'tweets'].includes(source.category));
-                let html = '';
-                if (books.length > 0) {
-                    html += '<div class="books-grid" style="margin-bottom:0;">';
-                    html += books.map(book => {
-                        const title = String(book.title || 'Unknown');
-                        const author = String(book.author || 'Unknown');
-                        const coverURL = safeURL(book.cover, { sameOriginOnly: true });
-                        const cover = coverURL && new URL(coverURL).pathname.startsWith('/api/covers/')
-                            ? `<img src="${escapeHTML(coverURL)}" class="book-cover" loading="lazy" alt="">`
-                            : '<div class="book-cover-placeholder">No Cover</div>';
-                        return `<div class="book-card" data-open-book="${escapeHTML(title)}">${cover}<div class="book-title">${escapeHTML(title)}</div><div class="book-author">${escapeHTML(author)}</div></div>`;
-                    }).join('');
-                    html += '</div>';
-                }
-                const textList = (items, heading) => items.length === 0 ? '' : `<h4 class="source-list-title">${heading}</h4><div class="source-list-container">${items.map(item => `<div class="source-list-item" data-open-book="${escapeHTML(item.title || 'Unknown')}"><div class="source-list-item-content"><div class="source-list-item-title">${escapeHTML(item.title || 'Unknown')}</div><div class="source-list-item-author">${escapeHTML(item.author || 'Unknown')}</div></div></div>`).join('')}</div>`;
-                html += textList(articles, 'Articles & Text');
-                html += textList(media, 'Audio & Video');
-                setSafeHTML(document.getElementById(containerId), html);
-            };
-
+    const localDataPromise = jsonPost('/api/person', { person: lastViewedTag })
+        .then(resp => resp.json())
+        .then(personData => {
+            if (!isCurrentLoad() || !personData.success) return;
             if ((personData.primary_sources || []).length > 0) {
                 document.getElementById('person-primary-container').style.display = 'block';
                 personData.primary_sources.sort((a, b) => Number(b.count) - Number(a.count));
@@ -1797,13 +1851,54 @@ async function openPersonPage(personName) {
                 personData.secondary_sources.sort((a, b) => Number(b.count) - Number(a.count));
                 renderSources(personData.secondary_sources, 'secondary-sources-content');
             }
-        }
+        })
+        .catch(error => console.error('Local person data failed', error));
 
-        renderTaxonomySidebar(document.getElementById('person-available-tags-container'), exploreData, [], tag => openPersonPage(tag), 'count', 'No other co-occurring tags found.');
-    } catch (error) {
-        console.error('Person page failed', error);
-        setSafeHTML(document.getElementById('person-blurb-text'), '<p style="color:var(--danger);">Failed to load data.</p>');
-    }
+    const explorePromise = jsonPost('/api/explore', { tags: [lastViewedTag] })
+        .then(resp => resp.json())
+        .then(exploreData => {
+            if (!isCurrentLoad()) return;
+            renderTaxonomySidebar(document.getElementById('person-available-tags-container'), exploreData, [], tag => openPersonPage(tag), 'count', 'No other co-occurring tags found.');
+        })
+        .catch(error => {
+            console.error('Related tag data failed', error);
+            if (isCurrentLoad()) setSafeHTML(document.getElementById('person-available-tags-container'), '<p class="empty-state-text">Failed to load related tags.</p>');
+        });
+
+    const wikiPromise = jsonPost('/api/person/wiki', { person: lastViewedTag })
+        .then(resp => resp.json())
+        .then(wikiData => {
+            if (!isCurrentLoad()) return;
+            const imageURL = safeURL(wikiData.wiki?.image_url, { allowedHost: 'upload.wikimedia.org' });
+            if (imageURL) {
+                const image = document.createElement('img');
+                image.src = imageURL;
+                image.className = 'person-image';
+                image.alt = '';
+                document.getElementById('person-image-container').appendChild(image);
+            }
+
+            const allTags = currentData ? currentData.all_database_tags : libraryData ? libraryData.all_book_tags : [];
+            renderLinkedPlainText(document.getElementById('person-blurb-text'), wikiData.wiki?.blurb || 'No Wikipedia extract found.', allTags, lastViewedTag);
+
+            const blurb = document.getElementById('person-blurb');
+            blurb.style.maxHeight = '390px';
+            setTimeout(() => {
+                if (!isCurrentLoad()) return;
+                if (blurb.scrollHeight > 530) {
+                    document.getElementById('person-blurb-fade').style.display = 'block';
+                    const toggle = document.getElementById('person-blurb-toggle');
+                    toggle.style.display = 'block';
+                    toggle.textContent = 'Show more ▾';
+                }
+            }, 100);
+        })
+        .catch(error => {
+            console.error('Wikipedia data failed', error);
+            if (isCurrentLoad()) document.getElementById('person-blurb-text').textContent = 'No Wikipedia extract found.';
+        });
+
+    await Promise.allSettled([localDataPromise, explorePromise, wikiPromise]);
 }
 
 function togglePersonBlurb() {
