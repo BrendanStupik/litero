@@ -86,6 +86,7 @@ MAX_TEXT_LENGTH = 100_000
 MAX_TAG_LENGTH = 200
 MAX_QUERY_LENGTH = 1_000
 MAX_TAXONOMY_ITEMS = 200
+UNFILTERED_HIGHLIGHT_PREVIEW_LIMIT = 75
 READWISE_TIMEOUT = (5, 60)
 
 SENSITIVE_FILES = (
@@ -1236,8 +1237,14 @@ def explore_highlights():
 
     clean_all_tags = sorted(list(MEMORY_DB["all_unique_tags"]))
 
+    visible_highlights = (
+        filtered_highlights
+        if active_tags
+        else filtered_highlights[:UNFILTERED_HIGHLIGHT_PREVIEW_LIMIT]
+    )
+
     return jsonify({
-        "highlights": filtered_highlights[:75],
+        "highlights": visible_highlights,
         "related_tags_grouped": grouped_tags,
         "tag_dates": tag_dates,
         "tag_counts": tag_counts,
